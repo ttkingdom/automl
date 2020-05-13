@@ -12,38 +12,31 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-r"""Convert PASCAL dataset to TFRecord.
+r"""Convert SCUT dataset to TFRecord.
 
 Example usage:
-    python create_pascal_tfrecord.py  --data_dir=/tmp/VOCdevkit  \
-        --year=VOC2012  --output_path=/tmp/pascal
+    python create_scut_tfrecord.py  --data_dir=/tmp/SCUT  \
+        --output_path=/tmp/scut
 """
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+from __future__ import absolute_import, division, print_function
 
 import hashlib
 import io
 import json
 import os
 
-from absl import app
-from absl import flags
-from absl import logging
-
-from lxml import etree
 import PIL.Image
 import tensorflow.compat.v1 as tf
+from absl import app, flags, logging
+from lxml import etree
 
 from dataset import tfrecord_util
 
-flags.DEFINE_string(
-    'data_dir', '', 'Root directory to raw PASCAL VOC dataset.')
+flags.DEFINE_string('data_dir', '', 'Root directory to raw SCUT dataset.')
 flags.DEFINE_string('set', 'train', 'Convert training set, validation set or '
                     'merged set.')
 flags.DEFINE_string('annotations_dir', 'Annotations',
                     '(Relative) path to annotations directory.')
-flags.DEFINE_string('year', 'VOC2007', 'Desired challenge year.')
 flags.DEFINE_string('output_path', '', 'Path to output TFRecord and json.')
 flags.DEFINE_string('label_map_json_path', None,
                     'Path to label map json file with a dictionary.')
@@ -54,30 +47,10 @@ flags.DEFINE_integer('num_images', None, 'Max number of imags to process.')
 FLAGS = flags.FLAGS
 
 SETS = ['train', 'val', 'trainval', 'test']
-YEARS = ['VOC2007', 'VOC2012', 'merged']
 
-pascal_label_map_dict = {
+scut_label_map_dict = {
     'background': 0,
-    'aeroplane': 1,
-    'bicycle': 2,
-    'bird': 3,
-    'boat': 4,
-    'bottle': 5,
-    'bus': 6,
-    'car': 7,
-    'cat': 8,
-    'chair': 9,
-    'cow': 10,
-    'diningtable': 11,
-    'dog': 12,
-    'horse': 13,
-    'motorbike': 14,
-    'person': 15,
-    'pottedplant': 16,
-    'sheep': 17,
-    'sofa': 18,
-    'train': 19,
-    'tvmonitor': 20,
+    'person': 1,
 }
 
 GLOBAL_IMG_ID = 0  # global image id.
@@ -86,12 +59,9 @@ GLOBAL_ANN_ID = 0  # global annotation id.
 
 def get_image_id(filename):
     """Convert a string to a integer."""
-    # Warning: this function is highly specific to pascal filename!!
-    # Given filename like '2008_000002', we cannot use id 2008000002 because our
-    # code internally will convert the int value to float32 and back to int, which
-    # would cause value mismatch int(float32(2008000002)) != int(2008000002).
-    # COCO needs int values, here we just use a incremental global_id, but
-    # users should customize their own ways to generate filename.
+    # Warning: this function is highly specific to SCUT filename!!
+    # Given filename like 'PartA_000002', we have to use an incremental global_id,
+    # but users should customize their own ways to generate filename.
     del filename
     global GLOBAL_IMG_ID
     GLOBAL_IMG_ID += 1
@@ -105,7 +75,8 @@ def get_ann_id():
     return GLOBAL_ANN_ID
 
 
-def dict_to_tf_example(data,
+def dict_to_tf_example(filename,
+                       data,
                        dataset_directory,
                        label_map_dict,
                        ignore_difficult_instances=False,
@@ -117,13 +88,14 @@ def dict_to_tf_example(data,
     by the raw data.
 
     Args:
-      data: dict holding PASCAL XML fields for a single image (obtained by running
+      filename: image filename ('PartA_xxxxx.jpg')
+      data: dict holding SCUT XML fields for a single image (obtained by running
         tfrecord_util.recursive_parse_xml_to_dict)
-      dataset_directory: Path to root directory holding PASCAL dataset
+      dataset_directory: Path to root directory holding SCUT dataset
       label_map_dict: A map from string label names to integers ids.
       ignore_difficult_instances: Whether to skip difficult instances in the
         dataset  (default: False).
-      image_subdirectory: String specifying subdirectory within the PASCAL dataset
+      image_subdirectory: String specifying subdirectory within the SCUT dataset
         directory holding the actual image data.
       ann_json_dict: annotation json dictionary.
 
@@ -131,10 +103,9 @@ def dict_to_tf_example(data,
       example: The converted tf.Example.
 
     Raises:
-      ValueError: if the image pointed to by data['filename'] is not a valid JPEG
+      ValueError: if the image pointed to filename is not a valid JPEG
     """
-    img_path = os.path.join(
-        data['folder'], image_subdirectory, data['filename'])
+    img_path = os.path.join(image_subdirectory, filename)
     full_path = os.path.join(dataset_directory, img_path)
     with tf.gfile.GFile(full_path, 'rb') as fid:
         encoded_jpg = fid.read()
@@ -146,10 +117,14 @@ def dict_to_tf_example(data,
 
     width = int(data['size']['width'])
     height = int(data['size']['height'])
-    image_id = get_image_id(data['filename'])
+
+    # In SCUT dataset, width and height maybe 0
+    width, height = image.size
+
+    image_id = get_image_id(filename)
     if ann_json_dict:
         image = {
-            'file_name': data['filename'],
+            'file_name': filename,
             'height': height,
             'width': width,
             'id': image_id,
@@ -209,8 +184,7 @@ def dict_to_tf_example(data,
                 'image/width':
                     tfrecord_util.int64_feature(width),
                 'image/filename':
-                    tfrecord_util.bytes_feature(
-                        data['filename'].encode('utf8')),
+                    tfrecord_util.bytes_feature(filename.encode('utf8')),
                 'image/source_id':
                     tfrecord_util.bytes_feature(str(image_id).encode('utf8')),
                 'image/key/sha256':
@@ -244,20 +218,15 @@ def dict_to_tf_example(data,
 def main(_):
     if FLAGS.set not in SETS:
         raise ValueError('set must be in : {}'.format(SETS))
-    if FLAGS.year not in YEARS:
-        raise ValueError('year must be in : {}'.format(YEARS))
     if not FLAGS.output_path:
         raise ValueError('output_path cannot be empty.')
 
     data_dir = FLAGS.data_dir
-    years = ['VOC2007', 'VOC2012']
-    if FLAGS.year != 'merged':
-        years = [FLAGS.year]
 
     logging.info('writing to output path: %s', FLAGS.output_path)
     writers = [
-        tf.python_io.TFRecordWriter(FLAGS.output_path + '-%05d-of-%05d.tfrecord' %
-                                    (i, FLAGS.num_shards))
+        tf.python_io.TFRecordWriter('%s-%05d-of-%05d.tfrecord' %
+                                    (FLAGS.output_path, i, FLAGS.num_shards))
         for i in range(FLAGS.num_shards)
     ]
 
@@ -265,7 +234,7 @@ def main(_):
         with tf.io.gfile.GFile(FLAGS.label_map_json_path, 'rb') as f:
             label_map_dict = json.load(f)
     else:
-        label_map_dict = pascal_label_map_dict
+        label_map_dict = scut_label_map_dict
 
     ann_json_dict = {
         'images': [],
@@ -273,35 +242,36 @@ def main(_):
         'annotations': [],
         'categories': []
     }
-    for year in years:
-        for class_name, class_id in label_map_dict.items():
-            cls = {'supercategory': 'none', 'id': class_id, 'name': class_name}
-            ann_json_dict['categories'].append(cls)
 
-        logging.info('Reading from PASCAL %s dataset.', year)
-        examples_path = os.path.join(data_dir, year, 'ImageSets', 'Main',
-                                     'aeroplane_' + FLAGS.set + '.txt')
-        annotations_dir = os.path.join(data_dir, year, FLAGS.annotations_dir)
-        examples_list = tfrecord_util.read_examples_list(examples_path)
-        for idx, example in enumerate(examples_list):
-            if FLAGS.num_images and idx >= FLAGS.num_images:
-                break
-            if idx % 100 == 0:
-                logging.info('On image %d of %d', idx, len(examples_list))
-            path = os.path.join(annotations_dir, example + '.xml')
-            with tf.gfile.GFile(path, 'r') as fid:
-                xml_str = fid.read()
-            xml = etree.fromstring(xml_str)
-            data = tfrecord_util.recursive_parse_xml_to_dict(xml)['annotation']
+    for class_name, class_id in label_map_dict.items():
+        cls = {'supercategory': 'none', 'id': class_id, 'name': class_name}
+        ann_json_dict['categories'].append(cls)
 
-            tf_example = dict_to_tf_example(
-                data,
-                FLAGS.data_dir,
-                label_map_dict,
-                FLAGS.ignore_difficult_instances,
-                ann_json_dict=ann_json_dict)
-            writers[idx % FLAGS.num_shards].write(
-                tf_example.SerializeToString())
+    logging.info('Reading from SCUT dataset.')
+    examples_path = os.path.join(
+        data_dir, 'ImageSets', 'Main', FLAGS.set + '.txt')
+    annotations_dir = os.path.join(data_dir, FLAGS.annotations_dir)
+    examples_list = tfrecord_util.read_examples_list(examples_path)
+    for idx, example in enumerate(examples_list):
+        if FLAGS.num_images and idx >= FLAGS.num_images:
+            break
+        if idx % 100 == 0:
+            logging.info('On image %d of %d', idx, len(examples_list))
+        path = os.path.join(annotations_dir, example + '.xml')
+        with tf.gfile.GFile(path, 'r') as fid:
+            xml_str = fid.read()
+        xml = etree.fromstring(xml_str)
+        data = tfrecord_util.recursive_parse_xml_to_dict(xml)['annotation']
+
+        filename = os.path.split(path)[-1][:-4] + '.jpg'
+        tf_example = dict_to_tf_example(
+            filename,
+            data,
+            FLAGS.data_dir,
+            label_map_dict,
+            FLAGS.ignore_difficult_instances,
+            ann_json_dict=ann_json_dict)
+        writers[idx % FLAGS.num_shards].write(tf_example.SerializeToString())
 
     for writer in writers:
         writer.close()
